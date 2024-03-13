@@ -1,0 +1,100 @@
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.Try
+	V.Local.sSQL.Declare(String)
+	V.Local.sSubject.Declare(String)
+	V.Local.sBody.Declare(String)
+	V.Local.sRet.Declare(String)
+	V.Local.sFilePath.Declare(String)
+	V.Local.sSenderEmail.Declare(String)
+	V.Local.sSenderName.Declare(String)
+	V.Local.sSender.Declare(String)
+	V.Local.sRecipients.Declare(String)
+	V.Local.sAttachment.Declare(String)
+	V.Local.sAndWhere.Declare(String)
+	V.Local.iUser.Declare(Long)
+	
+	'Set all of our static values that won't change.
+	F.Global.Security.GetUserEmail(V.Caller.User,V.Caller.CompanyCode,V.Local.sSenderEmail)
+	F.Global.Security.GetFullName(V.Caller.User,V.Caller.CompanyCode,V.Local.sSenderName)
+	F.Global.Security.GetUserId(V.Caller.User,V.Caller.CompanyCode,V.Local.iUser)
+	F.Intrinsic.String.Build("{0}*!*{1}",V.Local.sSenderEmail,V.Local.sSenderName,V.Local.sSender)
+	F.Intrinsic.String.Build("{0}*!*{1}","Query_Return.csv",V.Caller.TempDir,V.Local.sAttachment)
+	F.Intrinsic.String.Build("{0}\Query_Return.csv",V.Caller.TempDir,V.Local.sFilePath)
+	
+	F.ODBC.Connection!con.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+	
+	F.Intrinsic.Control.If(V.Caller.Hook,<>,-1)
+		F.Intrinsic.String.Build("AND CM.HOOK_NUMBER = '{0}'",V.Caller.Hook,V.Local.sAndWhere)
+	F.Intrinsic.Control.EndIf
+	
+	'Open recordset to get all of the queries that need to be run
+	F.Intrinsic.String.Build("SELECT DISTINCT CM.CONDITION_ID,CM.CONDITION_NAME,CM.CONDITION_QUERY,CM.HOLD_NOTIFICATIONS FROM GBG_5049_COND_MAINT CM JOIN GBG_5049_COND_EMAIL CE ON CM.CONDITION_ID = CE.CONDITION_ID WHERE CM.HOLD_NOTIFICATIONS = 0 {0}",V.local.sAndWhere,V.Local.sSQL)
+	F.ODBC.Connection!con.OpenLocalRecordSetRW("rstCondition",V.local.sSQL)
+	
+	'If nothing returns no work needs to be done.
+	F.Intrinsic.Control.DoUntil(V.ODBC.con!rstCondition.EOF,=,True)
+		'Execute the query
+		F.ODBC.Connection!con.ExecuteAndReturn(V.ODBC.con!rstCondition.FieldVal!CONDITION_QUERY,V.Local.sRet)
+		'If we get a return then what we were tracking has occurred, send email out to inform 
+		F.Intrinsic.Control.If(V.Local.sRet,<>,"")
+			F.Intrinsic.String.Replace(V.Local.sRet,"*!*",",",V.Local.sRet)
+			F.Intrinsic.String.Replace(V.Local.sRet,"#$#",V.Ambient.NewLine,V.Local.sRet)
+			F.Intrinsic.File.String2File(V.Local.sFilePath,V.Local.sRet)
+			F.Intrinsic.String.Build("The query: {0}{1}{0}Returned the attached records.{0}At: {2}{0}By User: {3}",V.Ambient.NewLine,V.ODBC.con!rstCondition.FieldVal!CONDITION_QUERY,V.Ambient.Now,V.Caller.User,V.Local.sBody)
+			F.Intrinsic.String.Build("Condition {0} Returned Data",V.ODBC.con!rstCondition.FieldValTrim!CONDITION_NAME,V.Local.sSubject)
+			
+			F.Intrinsic.String.Build("SELECT EMAIL_ADDRESS FROM GBG_5049_COND_EMAIL WHERE CONDITION_ID = '{0}'",V.ODBC.con!rstCondition.FieldVal!CONDITION_ID,V.Local.sSQL)
+			F.ODBC.Connection!con.OpenLocalRecordSetRW("rstEmail",V.Local.sSQL)
+			
+			F.Intrinsic.Control.DoUntil(V.ODBC.con!rstEmail.EOF,=,True)
+				F.Intrinsic.Control.If(V.Local.sRecipients,=,"")
+					F.Intrinsic.String.Build("*!*{0}",V.ODBC.con!rstEmail.FieldValTrim!EMAIL_ADDRESS,V.Local.sRecipients)
+				F.Intrinsic.Control.Else
+					F.Intrinsic.String.Build("{0}@!@*!*{1}",V.Local.sRecipients,V.ODBC.con!rstEmail.FieldValTrim!EMAIL_ADDRESS,V.Local.sRecipients)
+				F.Intrinsic.Control.EndIf
+				F.ODBC.con!rstEmail.MoveNext
+			F.Intrinsic.Control.Loop
+			
+			F.ODBC.con!rstEmail.Close
+			
+			F.Global.Messaging.QueueMessage(V.Caller.CompanyCode,V.Local.iUser,"GBG_5049_Data_Condition_Tracker.g2u",V.Local.sSubject,V.Local.sSender,V.Local.sRecipients,V.Local.sBody,"","",False,"","","","","","","",V.Local.sAttachment,True)
+			
+			'Clear out the recipients for the next run
+			V.Local.sRecipients.Set("")
+			v.Local.sRet.Set("")
+			'Set the Hold Notifications Value to True Since it's been sent.
+			F.ODBC.con!rstCondition.Set!HOLD_NOTIFICATIONS(True)
+			F.ODBC.con!rstCondition.Update
+			
+		F.Intrinsic.Control.EndIf
+		
+		F.ODBC.con!rstCondition.MoveNext
+	F.Intrinsic.Control.Loop
+	
+	F.ODBC.con!rstCondition.Close
+	F.ODBC.Connection!con.Close
+	F.Intrinsic.Control.End
+	
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(errorhandler, "Sub", V.Ambient.CurrentSubroutine, "ErrNo", V.Ambient.ErrorNumber, "ErrDesc", V.Ambient.ErrorDescription)
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.errorhandler.Start
+F.Intrinsic.Control.Try
+	V.Local.sError.Declare(String)
+
+	Function.Intrinsic.String.Build("Project: GBG_5049_Data_Condition_Tracker.g2u{0}{0}Subroutine: {1}{0}Error Occurred {2} with Description {3}",V.Ambient.Newline,V.Args.Sub,V.Args.ErrNo,V.Args.ErrDesc,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)	
+	F.ODBC.Connection!con.Close
+	F.Intrinsic.Control.End
+	
+F.Intrinsic.Control.Catch
+	Function.Intrinsic.String.Build("Project: GBG_5049_Data_Condition_Tracker.g2u{0}{0}Subroutine: {1}{0}Error Occurred {2} with Description {3}",V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.errorhandler.End
